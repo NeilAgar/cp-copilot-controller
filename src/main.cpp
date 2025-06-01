@@ -4,6 +4,7 @@ NSGamepad Gamepad;
 
 int baseline = 0;
 
+// -- PINS --
 int PIN_TOUCH = 4; // value touch pin
 int PIN_POT = 14; // potentiometer pin (0-4095)
 
