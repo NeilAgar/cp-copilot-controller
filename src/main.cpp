@@ -1,12 +1,27 @@
 #include "switch_ESP32.h"
 #include <Arduino.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
 NSGamepad Gamepad;
+WiFiUDP udp;
 
-int baseline = 0;
+// Wifi settings:
+const char *ssid = "MarioCopilot";
+const char *password = "12345678";
+const int UDP_PORT = 4210;
 
-// -- PINS --
+// Pins:
 int PIN_TOUCH = 4; // value touch pin
 int PIN_POT = 14; // potentiometer pin (0-4095)
+
+// Variables:
+int joyX = 128; // 128 is center
+int joyY = 128;
+bool pcButtonB = false;
+
+int baseline = 0;
+bool isPressed = false;
 
 // Kalman Filter Class
 class SimpleKalmanFilter {
@@ -32,17 +47,16 @@ class SimpleKalmanFilter {
     }
 };
 
-
 SimpleKalmanFilter kf(5.0, 5.0, 0.01); 
 
-const int WINDOW_SIZE = 20;
-float history[WINDOW_SIZE];
-int histIdx = 0;
-bool isPressed = false;
-
 void setup() {
+  Serial.begin(115200);
   Gamepad.begin();
   USB.begin();
+
+  // Start Wi-Fi
+  WiFi.softAP(ssid, password);
+  udp.begin(UDP_PORT);
 
   // Take initial readings to find ground level
   long total = 0;
@@ -51,41 +65,43 @@ void setup() {
     delay(10);
   }
   baseline = total / 50.0;
-
-  // Fill buffer
-  for(int i=0; i<WINDOW_SIZE; i++) {
-    history[i] = baseline;
-  }
 }
 
-// boolean pressed = false;
-
 void loop() {
-  // 1. Read
+  // 1. Listen for PC
+  int packetSize = udp.parsePacket();
+  if (packetSize) {
+    uint8_t incomingPacket[3];
+    udp.read(incomingPacket, 3);
+    joyX = incomingPacket[0];
+    joyY = incomingPacket[1];
+    pcButtonB = (incomingPacket[2] == 1);
+  }
+
+  // 2. Read inputs
   int rawPot = analogRead(PIN_POT);
   int rawTouch = touchRead(PIN_TOUCH);
 
-  // 2. Smooth
+  // Smooth
   float smoothTouch = kf.updateEstimate(rawTouch);
 
-  // 3. Baseline
+  // Baseline
   if (abs(smoothTouch - baseline) < 5000) {
     baseline = (baseline * 0.95) + (smoothTouch * 0.05);
   }
 
-  // 4. Sensitivity
+  // Sensitivity
   float thresholdOffset = map(rawPot, 0, 4096, 10000, 80000); 
 
-  // 5. Trigger
+  // Trigger
   float triggerPoint = baseline + thresholdOffset;
   float releasePoint = baseline + (thresholdOffset * 0.8); // Hysteresis
 
-  // 6. Button presses
+  // Button presses
   if (!isPressed) {
     if (smoothTouch > triggerPoint) { // detects for spikes
       isPressed = true;
       Gamepad.press(NSButton_A);
-      Gamepad.loop();
     }
   } 
   else {
@@ -93,9 +109,25 @@ void loop() {
     if (smoothTouch < releasePoint) {
       isPressed = false;
       Gamepad.release(NSButton_A);
-      Gamepad.loop();
     }
   }
 
+  // 3. Combine
+  
+  // Apply Joystick values
+  Gamepad.leftXAxis(joyX);
+  Gamepad.leftYAxis(joyY);
+
+  // Apply "Run" button
+  if (pcButtonB) {
+    Gamepad.press(NSButton_B);
+  } else {
+    // Only release B if we are NOT holding it
+    Gamepad.release(NSButton_B);
+  }
+
+  // Send Everything
+  Gamepad.loop();
+  
   delay(10);
 }
